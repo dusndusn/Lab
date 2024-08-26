@@ -24,20 +24,39 @@ filtered_chartevents=filtered_chartevents.sort_values(by=['ICUSTAY_ID','CHARTTIM
 filtered_chartevents['TIME_DIF']=filtered_chartevents.groupby('ICUSTAY_ID')['CHARTTIME'].transform(lambda x: (x-x.min()).dt.total_seconds()/3600)
 filtered_chartevents=filtered_chartevents[filtered_chartevents['TIME_DIF']<=3]
 filtered_chartevents=filtered_chartevents.groupby('ICUSTAY_ID').head(100)
-filtered_charevents=filtered_chartevents.drop_duplicates(subset=['ICUSTAY_ID', 'TIME_DIF', 'ITEMID'], keep='last')
+filtered_chartevents=filtered_chartevents.drop_duplicates(subset=['ICUSTAY_ID', 'TIME_DIF', 'ITEMID'], keep='last')
 
-#encoding
+
+#one_hot_encoding
+
+def encode_itemid(df):
+    
+    if df.empty:
+        print("Warning: Empty dataframe passed to encode_itemid")
+        return pd.DataFrame()
+    one_hot=pd.get_dummies(df['ITEMID'], prefix='ITEMID')
+    df_reset=df.reset_index(drop=True)
+    one_hot_reset=one_hot.reset_index(drop=True)
+    df_one_hot=pd.concat([df_reset[['ICUSTAY_ID']], one_hot_reset], axis=1)
+    df_one_hot=df_one_hot.groupby('ICUSTAY_ID').max()
+    return df_one_hot   
 
 #X_train_logistic.npy and x_test_logistic.npy
-filtered_chartevents['last_digit']=filtered_charevents['ICUSTAY_ID'].astype(str).str[-1].astype(int)
+filtered_chartevents['last_digit']=filtered_chartevents['ICUSTAY_ID'].astype(str).str[-1].astype(int)
 train_chartevents=filtered_chartevents[~filtered_chartevents['last_digit'].isin([8,9])]
 test_chartevents=filtered_chartevents[filtered_chartevents['last_digit'].isin([8,9])]
 
-x_train_logistic=train_chartevents.pivot_table(index='ICUSTAY_ID', columns='ITEMID', values='VALUENUM', aggfunc='last').fillna(0)
-x_test_logistic=test_chartevents.pivot_table(index='ICUSTAY_ID', columns='ITEMID', values='VALUENUM', aggfunc='last').fillna(0)
+print(f"Train chartevents shape: {train_chartevents.shape}")
+print(f"Test chartevents shape: {test_chartevents.shape}")
 
-np.save('x_train_logistic.npy', x_train_logistic.to_numpy())
-np.save('x_test_logistic.npy', x_test_logistic.to_numpy())
+encode_train_chartevents=encode_itemid(train_chartevents)
+encode_test_chartevents=encode_itemid(test_chartevents)
+
+print(f"Encoded train chartevents shape: {encode_train_chartevents.shape}")
+print(f"Encoded test chartevents shape: {encode_test_chartevents.shape}")
+
+np.save('x_train_logistic.npy', encode_train_chartevents.to_numpy())
+np.save('x_test_logistic.npy', encode_test_chartevents.to_numpy())
 
 
 #x_train_rnn.npy, x_test_rnn.npy
@@ -53,8 +72,8 @@ def rnn_format(df):
 x_train_rnn=rnn_format(train_chartevents)
 x_test_rnn=rnn_format(test_chartevents)
 
-np.save('x_train_rnn.npy', x_train_rnn)
-np.save('x_test_rnn.npy', x_test_rnn)
+np.save('x_train_rnn.npy', np.array(x_train_rnn))
+np.save('x_test_rnn.npy', np.array(x_test_rnn))
 
 #load admission data
 admissions=pd.read_csv(f'{path}/ADMISSIONS.csv', usecols=['HADM_ID','DEATHTIME'])
