@@ -1,32 +1,26 @@
-import torch
 import torch.nn as nn
 import numpy as np
 from sklearn.metrics import roc_auc_score, average_precision_score
 
-class GRUModel(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, n_layers=1):
-        super(GRUModel, self).__init__()
-        self.hidden_dim=hidden_dim
-        self.n_layers=n_layers
-
-        self.embedding=nn.Embedding(input_dim, hidden_dim)
-        self.gru=nn.GRU(hidden_dim, hidden_dim, n_layers, batch_first=True)
-        self.fc=nn.Linear(hidden_dim, output_dim)
-        self.sgimoid=nn.Sigmoid()
-
-    def forward(self, x):
-        x=self.embedding(x)
-        h0=torch.zeros(self.n_layers, x.size(0), self.hidden_dim).to(x.device)
-        out, _=self.gru(x, h0)
-        out=out[:,-1,:]
-        out=self.fc(out)
-        out=self.sigmoid(out)
-        return out
-    
 x_train_rnn = np.load('x_train_rnn.npy', allow_pickle=True)
 x_test_rnn = np.load('x_test_rnn.npy', allow_pickle=True)
 y_train = np.load('y_train.npy')
 y_test = np.load('y_test.npy')
+
+class GRUModel(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, n_layers=1):
+        super(GRUModel, self).__init__()
+        self.gru=nn.GRU(input_dim, hidden_dim, n_layers, batch_first=True)
+        self.fc=nn.Linear(hidden_dim, output_dim)
+    
+    def forward(self, x, length):
+        packed_input=nn.utils.rnn.pack_padded_sequence(x, length, batch_first=True, enforce_sorted=False)
+        packed_output, h_n=self.gru(packed_input)
+        output, _= nn.utils.rnn.pad_packed_sequence(packed_output, batch_first=True)
+        output=self.fc(output)
+        return output
+ 
+'''
 
 # 데이터 전처리
 vocab_size = 50000  # 추정치로 설정
@@ -94,3 +88,5 @@ with open(f'{student_id}_rnn.txt', 'w') as f:
     f.write(f'{train_auprc:.4f}\n')
     f.write(f'{test_auroc:.4f}\n')
     f.write(f'{test_auprc:.4f}\n')
+
+'''
