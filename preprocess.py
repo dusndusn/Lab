@@ -12,8 +12,6 @@ filtered_icustays=icustays[(icustays['LOS']>=1)&(icustays['LOS']<=2)]
 #load admission data
 admissions=pd.read_csv(f'{path}/ADMISSIONS.csv', usecols=['HADM_ID','DEATHTIME'])
 admissions.loc[:,'DEATHTIME']=pd.to_datetime(admissions['DEATHTIME'])
-
-
 filtered_icustays.loc[:,'INTIME']=pd.to_datetime(filtered_icustays['INTIME'])
 filtered_icustays.loc[:,'OUTTIME']=pd.to_datetime(filtered_icustays['OUTTIME'])
 
@@ -26,7 +24,6 @@ def is_dead(row):
     return int(row['INTIME']<=row['DEATHTIME']<=row['OUTTIME'])
 
 filtered_icustays['DEATH']=filtered_icustays.apply(is_dead, axis=1)
-print(filtered_icustays.head())
 
 
 #CHARTEVENTS: 
@@ -45,73 +42,65 @@ filtered_chartevents=filtered_chartevents.sort_values(by=['ICUSTAY_ID','CHARTTIM
 filtered_chartevents['TIME_DIF']=filtered_chartevents.groupby('ICUSTAY_ID')['CHARTTIME'].transform(lambda x: (x-x.min()).dt.total_seconds()/3600)
 filtered_chartevents=filtered_chartevents[filtered_chartevents['TIME_DIF']<=3]
 
-#print(filtered_chartevents.head(150))
-icustay_counts=filtered_chartevents.groupby('ICUSTAY_ID').size()
-print(icustay_counts.reset_index(name='counts'))
 
-'''
-filtered_chartevents=filtered_chartevents.groupby('ICUSTAY_ID').head(100)
+filtered_chartevents=filtered_chartevents.merge(filtered_icustays[['ICUSTAY_ID','DEATH']], on='ICUSTAY_ID', how='inner')
+filtered_chartevents['ICUSTAY_ID']=filtered_chartevents['ICUSTAY_ID'].astype(int)
+filtered_chartevents['last_digit']=filtered_chartevents['ICUSTAY_ID'].astype(str).str[-1].astype(int)
+
+
+#modify ITEM_ID:
+#choose ITEM_ID
+select_data=filtered_chartevents[~filtered_chartevents['last_digit'].isin([8,9])]
+count_id=select_data.groupby('ITEMID')['ICUSTAY_ID'].nunique().reset_index(name='count')
+total_icustays=select_data['ICUSTAY_ID'].nunique()
+count_id=count_id[count_id['count']>=0.4*total_icustays]
+filtered_chartevents=filtered_chartevents[filtered_chartevents['ITEMID'].isin(count_id['ITEMID'])]
+filtered_chartevents['TIME_BUCKET']=filtered_chartevents['TIME_DIF']*3600//108
+
+def normalization(group):
+    min_val=group['VALUENUM'].min()
+    max_val=group['VALUENUM'].max()
+    if min_val!=max_val:
+        group['VALUENUM']=(group['VALUENUM']-min_val)/(max_val-min_val)
+    else:
+        group['VALUENUM']=np.nan
+    return group
+
+filtered_chartevents=filtered_chartevents.groupby('ITEMID', group_keys=False).apply(normalization)
+filtered_chartevents=filtered_chartevents.sort_values(by=['ICUSTAY_ID', 'TIME_BUCKET'])
 
 #one_hot_encoding
-top_itemids=filtered_chartevents['ITEMID'].value_counts().nlargest(100).index
-filtered_chartevents=filtered_chartevents[filtered_chartevents['ITEMID'].isin(top_itemids)]
+encoded_chartevent=pd.get_dummies(filtered_chartevents['ITEMID'], prefix='ITEMID')
 
-def encode_itemid(df):
-    pivot_df=df.pivot_table(index='ICUSTAY_ID', columns='ITEMID', values='VALUENUM', aggfunc='mean', fill_value=0)
-    return pivot_df.astype(np.float32)
+encoded_chartevent=encoded_chartevent.mul(filtered_chartevents['VALUENUM'], axis=0)
+filtered_chartevents=pd.concat([filtered_chartevents, encoded_chartevent], axis=1)
+filtered_chartevents=filtered_chartevents.drop(columns=['ITEMID'])
 
-encoded_chartevents=encode_itemid(filtered_chartevents)
-encoded_chartevents=encoded_chartevents.reset_index()
+#data_RNN_model:
+#10rows for each ICUSTAY_ID
+aggregated = filtered_chartevents.groupby(['ICUSTAY_ID', 'TIME_BUCKET'], as_index=False).mean()
+pivoted = aggregated.pivot_table(index=['ICUSTAY_ID', 'TIME_BUCKET'], columns='ITEMID', values='VALUENUM', fill_value=0)
+all_buckets = np.arange(100)
+all_itemids = aggregated.columns[4:]
+idx = pd.MultiIndex.from_product([pivoted.index.levels[0], all_buckets], names=['ICUSTAY_ID', 'TIME_BUCKET'])
+pivoted = pivoted.reindex(idx, fill_value=0).reset_index()
+pivoted = pivoted.fillna(0).sort_index(axis=1)
+death_df = filtered_icustays[['ICUSTAY_ID', 'DEATH']].drop_duplicates()
+rnn_chartevents = death_df.merge(pivoted, on='ICUSTAY_ID', how='left')
+rnn_chartevents=rnn_chartevents.merge(filtered_chartevents[['last_digit']], on='ICUSTAY_ID', how='left')
+print(rnn_chartevents.head(100))
 
-#filtered_chartevents['ICUSTAY_ID']=filtered_chartevents['ICUSTAY_ID'].astype(int)
-#filtered_chartevents['last_digit'] = filtered_chartevents['ICUSTAY_ID'].astype(str).str[-1].astype(int)
+#divide in train set and test set
+train_encoded=rnn_chartevents[~rnn_chartevents['last_digit'].isin([8,9])]
+test_encoded=rnn_chartevents[rnn_chartevents['last_digit'].isin([8,9])]
 
-#encoded_chartevents=encoded_chartevents.merge(filtered_chartevents[['ICUSTAY_ID', 'last_digit']].drop_duplicates(), on='ICUSTAY_ID', how='left')
-encoded_chartevents=encoded_chartevents.merge(filtered_icustays[['ICUSTAY_ID', 'DEATH']].drop_duplicates(),on='ICUSTAY_ID', how='inner')
+train_encoded=train_encoded.drop(columns=['ICUSTAY_ID', 'last_digit', 'DEATH'])
+test_encoded=test_encoded.drop(columns=['ICUSTAY_ID', 'last_digit', 'DEATH'])
 
-encoded_chartevents['ICUSTAY_ID']=encoded_chartevents['ICUSTAY_ID'].astype(int)
-encoded_chartevents['last_digit']=encoded_chartevents['ICUSTAY_ID'].astype(str).str[-1].astype(int)
+np.save('x_train_rnn.npy', np.array(train_encoded))
+np.save('x_test_rnn.npy', np.array(test_encoded))
 
-
-
-train_encoded=encoded_chartevents[~encoded_chartevents['last_digit'].isin([8,9])]
-test_encoded=encoded_chartevents[encoded_chartevents['last_digit'].isin([8,9])]
-
-
-x_train=train_encoded.drop(columns=['ICUSTAY_ID', 'last_digit', 'DEATH']).to_numpy()
-x_test=test_encoded.drop(columns=['ICUSTAY_ID','last_digit', 'DEATH']).to_numpy()
-
-#y_train=encoded_chartevents[~encoded_chartevents['ICUSTAY_ID'].astype(str).str[-1].isin(['8','9'])]['DEATH']
-#y_test=encoded_chartevents[encoded_chartevents['ICUSTAY_ID'].astype(str).str[-1].isin(['8','9'])]['DEATH']
-
-y_train=train_encoded['DEATH']
-y_test=test_encoded['DEATH']
-
-#X_train_logistic.npy and x_test_logistic.npy
-
-np.save('x_train_logistic.npy', x_train)
-np.save('x_test_logistic.npy', x_test)
-
-
-
-#x_train_rnn.npy, x_test_rnn.npy
-def rnn_format(df):
-    format=df.groupby('ICUSTAY_ID').apply(
-        lambda group: ' '.join(
-            f"{time:.1f}:{itemid}:{value}"
-            for time, itemid, value in zip(group['TIME_DIF']*60, group['ITEMID'], group['VALUENUM'])
-        )
-    )
-    return format
-
-x_train_rnn=rnn_format(filtered_chartevents[filtered_chartevents['ICUSTAY_ID'].isin(train_encoded['ICUSTAY_ID'])])
-x_test_rnn=rnn_format(filtered_chartevents[filtered_chartevents['ICUSTAY_ID'].isin(train_encoded['ICUSTAY_ID'])])
-
-np.save('x_train_rnn.npy', np.array(x_train_rnn))
-np.save('x_test_rnn.npy', np.array(x_test_rnn))
-
-
-np.save('y_train.npy', y_train.to_numpy(dtype=np.float32))
-np.save('y_test.npy', y_test.to_numpy(dtype=np.float32))
-
-'''
+#data_logistic_regression_model:
+#combine rows for the same ICUSTAY_ID
+#divide in train set and test set
+#y_train, y_test using death column
