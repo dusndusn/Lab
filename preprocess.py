@@ -29,7 +29,7 @@ filtered_icustays['DEATH']=filtered_icustays.apply(is_dead, axis=1)
 #CHARTEVENTS: 
 #disregard NULL icustay_id and valuenum
 filtered_chartevents=pd.DataFrame()
-chuncksize=10**6
+chuncksize=10**7
 
 for chunck in tqdm(pd.read_csv(f'{path}/CHARTEVENTS.csv', usecols=['ICUSTAY_ID','CHARTTIME','ITEMID','VALUENUM'], chunksize=chuncksize)):
     filtered_chunck=chunck.dropna(subset=['ICUSTAY_ID', 'VALUENUM'])
@@ -74,33 +74,56 @@ encoded_chartevent=pd.get_dummies(filtered_chartevents['ITEMID'], prefix='ITEMID
 
 encoded_chartevent=encoded_chartevent.mul(filtered_chartevents['VALUENUM'], axis=0)
 filtered_chartevents=pd.concat([filtered_chartevents, encoded_chartevent], axis=1)
-filtered_chartevents=filtered_chartevents.drop(columns=['ITEMID'])
+filtered_chartevents=filtered_chartevents.drop(columns=['ITEMID','VALUENUM'])
+
 
 #data_RNN_model:
-#10rows for each ICUSTAY_ID
-aggregated = filtered_chartevents.groupby(['ICUSTAY_ID', 'TIME_BUCKET'], as_index=False).mean()
-pivoted = aggregated.pivot_table(index=['ICUSTAY_ID', 'TIME_BUCKET'], columns='ITEMID', values='VALUENUM', fill_value=0)
-all_buckets = np.arange(100)
-all_itemids = aggregated.columns[4:]
-idx = pd.MultiIndex.from_product([pivoted.index.levels[0], all_buckets], names=['ICUSTAY_ID', 'TIME_BUCKET'])
-pivoted = pivoted.reindex(idx, fill_value=0).reset_index()
-pivoted = pivoted.fillna(0).sort_index(axis=1)
-death_df = filtered_icustays[['ICUSTAY_ID', 'DEATH']].drop_duplicates()
-rnn_chartevents = death_df.merge(pivoted, on='ICUSTAY_ID', how='left')
-rnn_chartevents=rnn_chartevents.merge(filtered_chartevents[['last_digit']], on='ICUSTAY_ID', how='left')
-print(rnn_chartevents.head(100))
+#100 rows for each ICUSTAY_ID
+all_buckets=pd.DataFrame({
+    'ICUSTAY_ID':np.repeat(filtered_chartevents['ICUSTAY_ID'].unique(), 100),
+    'TIME_BUCKET':np.tile(np.arange(100), len(filtered_chartevents['ICUSTAY_ID'].unique()))
+})
+merged_chartevents=all_buckets.merge(filtered_chartevents, on=['ICUSTAY_ID', 'TIME_BUCKET'], how='left')
+agg_cols = [col for col in merged_chartevents.columns if col not in ['VALUENUM', 'ITEMID']]
+merged_chartevents = merged_chartevents.groupby(['ICUSTAY_ID', 'TIME_BUCKET'], as_index=False).agg(
+    {col: 'mean' for col in agg_cols}
+)
+
+merged_chartevents.fillna(0, inplace=True) 
+merged_chartevents=merged_chartevents.drop(columns=['TIME_DIF'])
+merged_chartevents['TIME_BUCKET']=merged_chartevents['TIME_BUCKET'].astype(int)
+merged_chartevents['last_digit']=merged_chartevents['last_digit'].astype(int)
+print(merged_chartevents.shape)
 
 #divide in train set and test set
-train_encoded=rnn_chartevents[~rnn_chartevents['last_digit'].isin([8,9])]
-test_encoded=rnn_chartevents[rnn_chartevents['last_digit'].isin([8,9])]
 
-train_encoded=train_encoded.drop(columns=['ICUSTAY_ID', 'last_digit', 'DEATH'])
-test_encoded=test_encoded.drop(columns=['ICUSTAY_ID', 'last_digit', 'DEATH'])
+train_encoded=merged_chartevents[~merged_chartevents['last_digit'].isin([8,9])]
+print(train_encoded.shape)
+print(train_encoded.head(100))
+test_encoded=merged_chartevents[merged_chartevents['last_digit'].isin([8,9])]
+print(test_encoded.shape)
+print(test_encoded.head(100))
+train_encoded=train_encoded.drop(columns=['ICUSTAY_ID', 'last_digit', 'DEATH', 'CHARTTIME'])
+
+test_encoded=test_encoded.drop(columns=['ICUSTAY_ID', 'last_digit', 'DEATH', 'CHARTTIME'])
+
 
 np.save('x_train_rnn.npy', np.array(train_encoded))
 np.save('x_test_rnn.npy', np.array(test_encoded))
 
 #data_logistic_regression_model:
-#combine rows for the same ICUSTAY_ID
+#combine 100 rows for the same ICUSTAY_ID
+#logistic_chartevents=merged_chartevents.groupby('ICUSTAY_ID').mean().reset_index()
+#print(logistic_chartevents.head())
+
 #divide in train set and test set
+#train_logistics=logistic_chartevents[~logistic_chartevents['last_digit'].isin([8,9])]
+#test_logistics=logistic_chartevents[~logistic_chartevents['last_digit'].isin([8,9])]
+
+#y_train=train_logistics['DEATH']
+#y_test=test_logistics['DEATH']
+
+#train_logistics=train_logistics.drop(columns=['ICUSTAY_ID', 'last_digit', 'DEATH']).to_numpy()
+#test_logistics=test_logistics.drop(columns=['ICUSTAY_ID', 'last_digit', 'DEATH']).to_numpy()
+
 #y_train, y_test using death column
